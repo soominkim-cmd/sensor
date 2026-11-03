@@ -1,0 +1,10 @@
+{
+  "description": "Displays FSR402 pressure sensor readings with a prominent current-value card and a trend chart, helping users monitor pressure changes at a glance.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
