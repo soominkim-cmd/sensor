@@ -1,4 +1,5 @@
 node_modules/
+.venv/
 dist/
 build/
 .cache/
@@ -19,3 +20,4 @@ logs/
 # beside it.
 /.plugins/
 /.opencode-skills/
+.env
