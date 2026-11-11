@@ -1,183 +1,336 @@
 import { createClient } from "@supabase/supabase-js"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
-const supabase = supabaseUrl && supabaseAnonKey
-  ? createClient(supabaseUrl, supabaseAnonKey)
-  : null
-
-interface Measurement {
-  time: string
+type Measurement = {
   value: number
+  time: string
   timestamp: number
 }
 
-interface SerialPortLike {
+type SerialPortLike = {
   readable: ReadableStream<Uint8Array> | null
   open(options: { baudRate: number }): Promise<void>
   close(): Promise<void>
 }
 
-interface SerialApi {
+type SerialApi = {
   requestPort(): Promise<SerialPortLike>
 }
 
-const pressureData = [
-  { time: "10:00", value: 312 },
-  { time: "10:05", value: 346 },
-  { time: "10:10", value: 331 },
-  { time: "10:15", value: 388 },
-  { time: "10:20", value: 402 },
-  { time: "10:25", value: 435 },
-  { time: "10:30", value: 412 },
-  { time: "10:35", value: 468 },
-  { time: "10:40", value: 452 },
-  { time: "10:45", value: 497 },
-  { time: "10:50", value: 521 },
-  { time: "10:55", value: 486 },
-  { time: "11:00", value: 512 },
-]
+const SENSOR_MAX = 1023
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+const supabase =
+  supabaseUrl && supabaseAnonKey
+    ? createClient(supabaseUrl, supabaseAnonKey)
+    : null
 
-function SensorIcon() {
+type MaterialStage = "Rest" | "Soft" | "Pressed" | "Compressed"
+
+function clamp(value: number, min = 0, max = 1) {
+  return Math.min(Math.max(value, min), max)
+}
+
+function getStage(pressure: number): MaterialStage {
+  if (pressure < 0.12) return "Rest"
+  if (pressure < 0.45) return "Soft"
+  if (pressure < 0.78) return "Pressed"
+  return "Compressed"
+}
+
+function useSpringValue(target: number) {
+  const [value, setValue] = useState(target)
+  const current = useRef(target)
+  const velocity = useRef(0)
+  const frame = useRef<number | null>(null)
+
+  useEffect(() => {
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches
+
+    if (reduceMotion) {
+      current.current = target
+      velocity.current = 0
+      setValue(target)
+      return
+    }
+
+    const animate = () => {
+      const displacement = target - current.current
+      velocity.current = (velocity.current + displacement * 0.085) * 0.78
+      current.current += velocity.current
+
+      if (
+        Math.abs(displacement) < 0.0005 &&
+        Math.abs(velocity.current) < 0.0005
+      ) {
+        current.current = target
+        velocity.current = 0
+        setValue(target)
+        frame.current = null
+        return
+      }
+
+      setValue(current.current)
+      frame.current = requestAnimationFrame(animate)
+    }
+
+    if (frame.current !== null) cancelAnimationFrame(frame.current)
+    frame.current = requestAnimationFrame(animate)
+
+    return () => {
+      if (frame.current !== null) cancelAnimationFrame(frame.current)
+    }
+  }, [target])
+
+  return clamp(value)
+}
+
+function ConnectionMark({ connected }: { connected: boolean }) {
   return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="size-5">
-      <path
-        d="M8 3.75h8M9.5 3.75v4.5m5-4.5v4.5M7.25 8.25h9.5v8.5h-9.5zM9 16.75v3.5m6-3.5v3.5"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.7"
-      />
-      <circle cx="12" cy="12.5" r="1.5" fill="currentColor" />
-    </svg>
+    <span
+      className={`connection-mark ${connected ? "is-connected" : "is-preview"}`}
+      aria-hidden="true"
+    >
+      <span />
+    </span>
   )
 }
 
-function TrendIcon() {
+function MaterialObject({ pressure }: { pressure: number }) {
+  const p = clamp(pressure)
+  const deformation = clamp((p - 0.42) / 0.58)
+  const halfWidth = 130 + p * 82
+  const halfHeight = 130 - p * 76
+  const bottom = 326
+  const centerX = 300
+  const centerY = bottom - halfHeight
+  const top = bottom - halfHeight * 2
+  const sideRipple = deformation * 12
+  const topDent = deformation * 12
+
+  const shape = [
+    `M ${centerX} ${top + topDent}`,
+    `C ${centerX + halfWidth * 0.28} ${top - topDent * 0.2}`,
+    `${centerX + halfWidth * 0.72} ${top + halfHeight * 0.09 + topDent * 0.35}`,
+    `${centerX + halfWidth} ${centerY - halfHeight * 0.08}`,
+    `C ${centerX + halfWidth + sideRipple} ${centerY + halfHeight * 0.38}`,
+    `${centerX + halfWidth * 0.65} ${bottom - sideRipple * 0.15}`,
+    `${centerX} ${bottom}`,
+    `C ${centerX - halfWidth * 0.63} ${bottom + sideRipple * 0.08}`,
+    `${centerX - halfWidth - sideRipple} ${centerY + halfHeight * 0.36}`,
+    `${centerX - halfWidth} ${centerY - halfHeight * 0.06}`,
+    `C ${centerX - halfWidth * 0.7} ${top + halfHeight * 0.08 + topDent * 0.45}`,
+    `${centerX - halfWidth * 0.27} ${top + topDent * 0.05}`,
+    `${centerX} ${top + topDent}`,
+    "Z",
+  ].join(" ")
+
   return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="size-4">
-      <path
-        d="m4 15.5 4.2-4.2 3.2 3.2L18.5 7.5M14.5 7.5h4v4"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
+    <div className="material-stage" aria-hidden="true">
+      <div
+        className="material-aura"
+        style={{
+          transform: `translate(-50%, -50%) scale(${1 + p * 0.12}, ${1 - p * 0.18})`,
+        }}
       />
-    </svg>
+      <svg
+        viewBox="0 0 600 410"
+        className="material-object"
+        role="presentation"
+      >
+        <defs>
+          <linearGradient
+            id="matter-body"
+            x1="0.14"
+            x2="0.88"
+            y1="0.04"
+            y2="0.96"
+          >
+            <stop offset="0%" stopColor="var(--matter-highlight)" />
+            <stop offset="38%" stopColor="var(--matter-mid)" />
+            <stop offset="78%" stopColor="var(--matter-base)" />
+            <stop offset="100%" stopColor="var(--matter-shadow)" />
+          </linearGradient>
+          <radialGradient id="matter-light" cx="0.32" cy="0.2" r="0.68">
+            <stop offset="0%" stopColor="white" stopOpacity="0.86" />
+            <stop offset="38%" stopColor="white" stopOpacity="0.22" />
+            <stop offset="100%" stopColor="white" stopOpacity="0" />
+          </radialGradient>
+          <linearGradient id="matter-edge" x1="0" x2="1" y1="0" y2="1">
+            <stop offset="0%" stopColor="white" stopOpacity="0.72" />
+            <stop offset="54%" stopColor="white" stopOpacity="0.08" />
+            <stop offset="100%" stopColor="var(--navy)" stopOpacity="0.18" />
+          </linearGradient>
+          <filter
+            id="object-shadow"
+            x="-40%"
+            y="-40%"
+            width="180%"
+            height="200%"
+          >
+            <feDropShadow
+              dx="0"
+              dy={12 - p * 4}
+              stdDeviation={15 - p * 5}
+              floodColor="var(--shadow-blue)"
+              floodOpacity={0.2 + p * 0.1}
+            />
+          </filter>
+          <filter id="soft-blur">
+            <feGaussianBlur stdDeviation="7" />
+          </filter>
+          <clipPath id="matter-clip">
+            <path d={shape} />
+          </clipPath>
+        </defs>
+
+        <ellipse
+          cx="300"
+          cy="347"
+          rx={92 + p * 82}
+          ry={12 - p * 3}
+          fill="var(--shadow-blue)"
+          opacity={0.09 + p * 0.08}
+          filter="url(#soft-blur)"
+        />
+
+        <path
+          d={shape}
+          fill="url(#matter-body)"
+          stroke="url(#matter-edge)"
+          strokeWidth="1.5"
+          filter="url(#object-shadow)"
+        />
+
+        <g clipPath="url(#matter-clip)">
+          <ellipse
+            cx={245 - p * 12}
+            cy={centerY - halfHeight * 0.34}
+            rx={halfWidth * 0.6}
+            ry={halfHeight * 0.52}
+            fill="url(#matter-light)"
+            opacity={0.78 - p * 0.12}
+            transform={`rotate(-18 245 ${centerY - halfHeight * 0.34})`}
+          />
+          <path
+            d={`M ${centerX - halfWidth * 0.7} ${centerY + halfHeight * 0.05}
+                C ${centerX - halfWidth * 0.22} ${centerY - halfHeight * 0.18 + deformation * 10},
+                  ${centerX + halfWidth * 0.12} ${centerY + halfHeight * 0.2 - deformation * 14},
+                  ${centerX + halfWidth * 0.75} ${centerY - halfHeight * 0.02}`}
+            fill="none"
+            stroke="white"
+            strokeLinecap="round"
+            strokeWidth={1.5 + deformation * 1.5}
+            opacity={0.08 + deformation * 0.2}
+          />
+          <path
+            d={`M ${centerX - halfWidth * 0.5} ${centerY + halfHeight * 0.35}
+                C ${centerX - halfWidth * 0.04} ${centerY + halfHeight * 0.14},
+                  ${centerX + halfWidth * 0.26} ${centerY + halfHeight * 0.5},
+                  ${centerX + halfWidth * 0.66} ${centerY + halfHeight * 0.25}`}
+            fill="none"
+            stroke="var(--navy)"
+            strokeLinecap="round"
+            strokeWidth="2"
+            opacity={deformation * 0.09}
+          />
+        </g>
+      </svg>
+    </div>
   )
 }
 
-function Chart({ data }: { data: Measurement[] }) {
-  const width = 1000
-  const height = 300
-  const max = 1023
-  const xDenominator = Math.max(data.length - 1, 1)
-  const labelInterval = Math.max(1, Math.ceil(data.length / 5))
-  const points = data
-    .map((item, index) => {
-      const x = (index / xDenominator) * width
-      const y = height - (item.value / max) * height
+function PressureGraph({
+  values,
+  isPreview,
+}: {
+  values: number[]
+  isPreview: boolean
+}) {
+  const chartValues =
+    values.length > 1 ? values : [values[0] ?? 0, values[0] ?? 0]
+  const points = chartValues
+    .map((value, index) => {
+      const x = (index / (chartValues.length - 1)) * 720
+      const y = 110 - clamp(value) * 94
       return `${x},${y}`
     })
     .join(" ")
 
   return (
-    <div className="mt-7">
-      <div className="flex h-[300px] sm:h-[340px]">
-        <div className="mr-4 flex w-9 shrink-0 flex-col justify-between pb-7 text-right text-[11px] font-medium text-slate-400 sm:mr-5">
-          <span>1023</span>
-          <span>768</span>
-          <span>512</span>
-          <span>256</span>
-          <span>0</span>
-        </div>
-        <div className="relative min-w-0 flex-1 pb-7">
-          <div className="absolute inset-x-0 top-0 bottom-7 flex flex-col justify-between">
-            {[0, 1, 2, 3, 4].map((line) => (
-              <div
-                key={line}
-                className="border-t border-dashed border-slate-200"
-              />
-            ))}
-          </div>
-
-          <svg
-            viewBox={`0 0 ${width} ${height}`}
-            preserveAspectRatio="none"
-            className="absolute inset-x-0 top-0 h-[calc(100%-1.75rem)] w-full overflow-visible"
-            role="img"
-            aria-label="최근 압력 센서 측정값 변화 추이"
-          >
-            <defs>
-              <linearGradient id="chartArea" x1="0" x2="0" y1="0" y2="1">
-                <stop offset="0%" stopColor="#4f7cff" stopOpacity=".22" />
-                <stop offset="100%" stopColor="#4f7cff" stopOpacity="0" />
-              </linearGradient>
-            </defs>
-            <polygon
-              points={`0,${height} ${points} ${width},${height}`}
-              fill="url(#chartArea)"
-            />
-            <polyline
-              points={points}
-              fill="none"
-              stroke="#4f7cff"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth="5"
-              vectorEffect="non-scaling-stroke"
-            />
-            {data.map((item, index) => {
-              const x = (index / xDenominator) * width
-              const y = height - (item.value / max) * height
-              const isCurrent = index === data.length - 1
-
-              return isCurrent ? (
-                <g key={`${item.time}-${index}`}>
-                  <circle cx={x} cy={y} r="15" fill="#4f7cff" opacity=".14" />
-                  <circle
-                    cx={x}
-                    cy={y}
-                    r="7"
-                    fill="white"
-                    stroke="#4f7cff"
-                    strokeWidth="4"
-                  />
-                </g>
-              ) : null
-            })}
-          </svg>
-
-          <div className="absolute inset-x-0 bottom-0 flex justify-between text-[11px] font-medium text-slate-400">
-            {data
-              .filter((_, index) => index % labelInterval === 0 || index === data.length - 1)
-              .map((item, index) => (
-                <span key={`${item.time}-${index}`}>{item.time}</span>
-              ))}
-          </div>
-        </div>
+    <div className="graph-wrap">
+      <div className="graph-grid" aria-hidden="true">
+        <span />
+        <span />
+        <span />
       </div>
-      <div className="ml-14 mt-3 flex items-center gap-5 border-t border-slate-100 pt-4 text-xs text-slate-500 sm:ml-[3.75rem]">
-        <span className="flex items-center gap-2">
-          <span className="size-2 rounded-full bg-[#4f7cff]" />
-          압력값
-        </span>
-        <span className="text-slate-400">단위: ADC</span>
+      <svg
+        viewBox="0 0 720 120"
+        preserveAspectRatio="none"
+        role="img"
+        aria-label="최근 압력 변화"
+      >
+        <defs>
+          <linearGradient id="graph-fill" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="var(--blue)" stopOpacity="0.18" />
+            <stop offset="100%" stopColor="var(--blue)" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <polygon points={`0,120 ${points} 720,120`} fill="url(#graph-fill)" />
+        <polyline
+          points={points}
+          fill="none"
+          stroke="var(--blue)"
+          strokeDasharray={isPreview ? "7 7" : undefined}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="2.5"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+      <div className="graph-labels">
+        <span>{isPreview ? "Preview start" : "1 hour ago"}</span>
+        <span>Now</span>
       </div>
     </div>
   )
 }
 
+function StageScale({ activeStage }: { activeStage: MaterialStage }) {
+  const stages: MaterialStage[] = ["Rest", "Soft", "Pressed", "Compressed"]
+
+  return (
+    <div className="stage-scale">
+      {stages.map((stage, index) => (
+        <div
+          key={stage}
+          className={`stage-step ${stage === activeStage ? "is-active" : ""}`}
+        >
+          <span>{String(index + 1).padStart(2, "0")}</span>
+          <strong>{stage}</strong>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function App() {
-  const [serialMeasurements, setSerialMeasurements] = useState<Measurement[]>([])
-  const [supabaseMeasurements, setSupabaseMeasurements] = useState<Measurement[]>([])
-  const [supabaseStatus, setSupabaseStatus] = useState("연결 중")
+  const [serialMeasurements, setSerialMeasurements] = useState<Measurement[]>(
+    [],
+  )
+  const [supabaseMeasurements, setSupabaseMeasurements] =
+    useState<Measurement[]>([])
+  const [supabaseStatus, setSupabaseStatus] =
+    useState<"Connecting" | "Connected" | "Not configured" | "Error" | "Disconnected">(
+      "Connecting",
+    )
   const [supabaseError, setSupabaseError] = useState("")
-  const [connected, setConnected] = useState(false)
+  const [serialConnected, setSerialConnected] = useState(false)
   const [serialError, setSerialError] = useState("")
+  const [previewPressure, setPreviewPressure] = useState(0)
+  const [previewHistory, setPreviewHistory] = useState<number[]>([0])
   const portRef = useRef<SerialPortLike | null>(null)
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null)
   const readTaskRef = useRef<Promise<void> | null>(null)
@@ -185,13 +338,13 @@ export default function App() {
 
   useEffect(() => {
     if (!supabase) {
-      setSupabaseStatus("설정 필요")
-      setSupabaseError(".env에 Supabase URL과 anon key를 설정한 뒤 개발 서버를 다시 시작해 주세요.")
+      setSupabaseStatus("Not configured")
+      setSupabaseError("Supabase environment variables are not configured.")
       return
     }
 
     let active = true
-    setSupabaseStatus("연결 중")
+    setSupabaseStatus("Connecting")
     setSupabaseError("")
 
     async function loadRecentReadings() {
@@ -203,6 +356,7 @@ export default function App() {
 
       if (!active) return
       if (error) {
+        setSupabaseStatus("Error")
         setSupabaseError(error.message)
         return
       }
@@ -211,8 +365,15 @@ export default function App() {
         .map((row) => {
           const timestamp = Date.parse(row.created_at)
           const value = Number(row.value)
-          return Number.isFinite(timestamp) && Number.isFinite(value) && value >= 0 && value <= 1023
-            ? { time: new Date(timestamp).toLocaleTimeString(), value, timestamp }
+          return Number.isFinite(timestamp) &&
+            Number.isFinite(value) &&
+            value >= 0 &&
+            value <= SENSOR_MAX
+            ? {
+                time: new Date(timestamp).toLocaleTimeString(),
+                value,
+                timestamp,
+              }
             : null
         })
         .filter((reading): reading is Measurement => reading !== null)
@@ -228,28 +389,49 @@ export default function App() {
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "readings" },
         (payload) => {
-          const row = payload.new as { value?: unknown; created_at?: unknown }
+          const row = payload.new as {
+            value?: unknown
+            created_at?: unknown
+          }
           const value = Number(row.value)
-          const timestamp = typeof row.created_at === "string"
-            ? Date.parse(row.created_at)
-            : Date.now()
-          if (!Number.isFinite(value) || value < 0 || value > 1023 || !Number.isFinite(timestamp)) return
+          const timestamp =
+            typeof row.created_at === "string"
+              ? Date.parse(row.created_at)
+              : Date.now()
 
-          setSupabaseMeasurements((current) => [
-            ...current,
-            { time: new Date(timestamp).toLocaleTimeString(), value, timestamp },
-          ].sort((a, b) => a.timestamp - b.timestamp).slice(-100))
+          if (
+            !Number.isFinite(value) ||
+            value < 0 ||
+            value > SENSOR_MAX ||
+            !Number.isFinite(timestamp)
+          )
+            return
+
+          setSupabaseMeasurements((current) =>
+            [
+              ...current,
+              {
+                time: new Date(timestamp).toLocaleTimeString(),
+                value,
+                timestamp,
+              },
+            ]
+              .sort((a, b) => a.timestamp - b.timestamp)
+              .slice(-100),
+          )
         },
       )
       .subscribe((status, error) => {
         if (!active) return
         if (status === "SUBSCRIBED") {
-          setSupabaseStatus("연결됨")
+          setSupabaseStatus("Connected")
         } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-          setSupabaseStatus("오류")
-          setSupabaseError(error?.message ?? "Realtime 채널에 연결하지 못했습니다.")
+          setSupabaseStatus("Error")
+          setSupabaseError(
+            error?.message ?? "Could not connect to the realtime channel.",
+          )
         } else if (status === "CLOSED") {
-          setSupabaseStatus("연결 끊김")
+          setSupabaseStatus("Disconnected")
         }
       })
 
@@ -259,27 +441,54 @@ export default function App() {
     }
   }, [])
 
-  const activeMeasurements = connected && serialMeasurements.length > 0
-    ? serialMeasurements
-    : supabaseMeasurements
-  const displayData = activeMeasurements.length > 0 ? activeMeasurements : pressureData.map((item, index) => ({
-    ...item,
-    timestamp: index,
-  }))
-  const currentValue = activeMeasurements.at(-1)?.value ?? 512
-  const previousValue = activeMeasurements.at(-2)?.value
-  const trend = previousValue
-    ? ((currentValue - previousValue) / previousValue) * 100
-    : 5.3
-  const liveStats = activeMeasurements.length > 0
-    ? {
-        min: Math.min(...activeMeasurements.map((item) => item.value)),
-        average: Math.round(
-          activeMeasurements.reduce((total, item) => total + item.value, 0) / activeMeasurements.length,
-        ),
-        max: Math.max(...activeMeasurements.map((item) => item.value)),
-      }
-    : { min: 312, average: 428, max: 521 }
+  const activeMeasurements =
+    serialConnected && serialMeasurements.length > 0
+      ? serialMeasurements
+      : supabaseMeasurements
+  const hasSensorData = activeMeasurements.length > 0
+  const latestMeasurement = hasSensorData ? activeMeasurements.at(-1)! : null
+  const latestSensorValue = latestMeasurement?.value ?? null
+  const dataSource =
+    serialConnected && serialMeasurements.length > 0
+      ? "Web Serial"
+      : hasSensorData
+        ? "Supabase"
+        : "Preview"
+  const targetPressure = hasSensorData
+    ? clamp(latestSensorValue! / SENSOR_MAX)
+    : previewPressure
+  const smoothPressure = useSpringValue(targetPressure)
+  const stage = getStage(smoothPressure)
+
+  const normalizedSensorValues = useMemo(
+    () =>
+      activeMeasurements.map((reading) => clamp(reading.value / SENSOR_MAX)),
+    [activeMeasurements],
+  )
+  const activeValues = hasSensorData ? normalizedSensorValues : previewHistory
+  const statistics = useMemo(() => {
+    if (activeValues.length === 0)
+      return { min: null, average: null, max: null }
+    return {
+      min: Math.min(...activeValues),
+      average:
+        activeValues.reduce((sum, value) => sum + value, 0) /
+        activeValues.length,
+      max: Math.max(...activeValues),
+    }
+  }, [activeValues])
+
+  const updatePreview = (nextValue: number) => {
+    const normalized = clamp(nextValue / 100)
+    setPreviewPressure(normalized)
+    setPreviewHistory((history) => [...history.slice(-31), normalized])
+  }
+
+  const formatStatistic = (value: number | null) => {
+    if (value === null) return "—"
+    if (hasSensorData) return `${Math.round(value * SENSOR_MAX)} ADC`
+    return `${Math.round(value * 100)}%`
+  }
 
   async function readSerialData(
     port: SerialPortLike,
@@ -302,18 +511,29 @@ export default function App() {
           const trimmed = line.trim()
           if (!/^\d+$/.test(trimmed)) continue
 
-          const value = Number(trimmed)
-          if (value < 0 || value > 1023) continue
+          const sensorValue = Number(trimmed)
+          if (sensorValue < 0 || sensorValue > SENSOR_MAX) continue
+          const timestamp = Date.now()
 
-          setSerialMeasurements((current) => [
-            ...current,
-            { time: new Date().toLocaleTimeString(), value, timestamp: Date.now() },
-          ].slice(-100))
+          setSerialMeasurements((current) =>
+            [
+              ...current,
+              {
+                time: new Date(timestamp).toLocaleTimeString(),
+                value: sensorValue,
+                timestamp,
+              },
+            ].slice(-100),
+          )
         }
       }
     } catch (error) {
       if (!disconnectRequestedRef.current) {
-        setSerialError(error instanceof Error ? error.message : "센서 데이터를 읽지 못했습니다.")
+        setSerialError(
+          error instanceof Error
+            ? error.message
+            : "Could not read sensor data.",
+        )
       }
     } finally {
       reader.releaseLock()
@@ -323,9 +543,9 @@ export default function App() {
         try {
           await port.close()
         } catch {
-          // The port may already have been closed by the browser.
+          // The browser may already have closed the port.
         }
-        setConnected(false)
+        setSerialConnected(false)
       }
     }
   }
@@ -333,7 +553,9 @@ export default function App() {
   async function connectSerial() {
     const serial = (navigator as Navigator & { serial?: SerialApi }).serial
     if (!serial) {
-      setSerialError("Web Serial을 지원하는 Chrome에서 localhost 또는 HTTPS로 접속해 주세요.")
+      setSerialError(
+        "Web Serial requires Chrome on localhost or a secure HTTPS connection.",
+      )
       return
     }
 
@@ -344,15 +566,19 @@ export default function App() {
       const port = await serial.requestPort()
       portRef.current = port
       await port.open({ baudRate: 115200 })
-      if (!port.readable) throw new Error("시리얼 포트를 읽을 수 없습니다.")
+      if (!port.readable) throw new Error("The serial port is not readable.")
 
       const reader = port.readable.getReader()
       readerRef.current = reader
-      setConnected(true)
+      setSerialConnected(true)
       readTaskRef.current = readSerialData(port, reader)
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "NotFoundError")) {
-        setSerialError(error instanceof Error ? error.message : "시리얼 포트에 연결하지 못했습니다.")
+        setSerialError(
+          error instanceof Error
+            ? error.message
+            : "Could not connect the sensor.",
+        )
       }
       const port = portRef.current
       portRef.current = null
@@ -363,7 +589,7 @@ export default function App() {
           // The port may not have opened successfully.
         }
       }
-      setConnected(false)
+      setSerialConnected(false)
     }
   }
 
@@ -390,194 +616,191 @@ export default function App() {
       } catch {
         // The port may already be closed.
       }
-      setConnected(false)
+      setSerialConnected(false)
     }
   }
 
   return (
-    <div className="min-h-screen bg-[#f5f7fb] text-slate-900">
-      <header className="border-b border-slate-200/80 bg-white/90">
-        <div className="mx-auto flex max-w-[1440px] items-center justify-between px-5 py-4 sm:px-8 lg:px-12">
-          <div className="flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-xl bg-[#315edd] text-white shadow-sm shadow-blue-200">
-              <SensorIcon />
-            </div>
-            <div>
-              <p className="text-[15px] font-bold tracking-tight">
-                Sensor Monitor
-              </p>
-              <p className="text-[11px] font-medium text-slate-400">
-                FSR402 DASHBOARD
-              </p>
-            </div>
+    <div className="site-shell">
+      <header className="site-header">
+        <div className="brand-lockup">
+          <strong>SOFT MATTER</strong>
+          <span>Pressure-responsive digital material</span>
+        </div>
+
+        <div className="connection-summary">
+          <div className="connection-copy">
+            <span>Sensor status</span>
+            <strong>
+              {hasSensorData
+                ? `${dataSource} active`
+                : serialConnected
+                  ? "Waiting for data"
+                  : "Preview mode"}
+            </strong>
           </div>
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <div className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold ${supabaseStatus === "연결됨" ? "border-emerald-100 bg-emerald-50 text-emerald-700" : supabaseStatus === "오류" || supabaseStatus === "설정 필요" ? "border-rose-100 bg-rose-50 text-rose-700" : "border-slate-200 bg-slate-100 text-slate-500"}`}>
-              <span className={`inline-flex size-2 rounded-full ${supabaseStatus === "연결됨" ? "bg-emerald-500" : supabaseStatus === "오류" || supabaseStatus === "설정 필요" ? "bg-rose-500" : "bg-slate-400"}`} />
-              Supabase {supabaseStatus}
-            </div>
-            <div className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold ${connected ? "border-emerald-100 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-100 text-slate-500"}`}>
-              <span className={`inline-flex size-2 rounded-full ${connected ? "bg-emerald-500" : "bg-slate-400"}`} />
-              Serial {connected ? "연결됨" : "연결 안 됨"}
-            </div>
+          <ConnectionMark connected={hasSensorData} />
+          <div className="last-received">
+            <span>Last data</span>
+            <strong>{latestMeasurement?.time ?? "No sensor data"}</strong>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1440px] px-5 py-8 sm:px-8 sm:py-10 lg:px-12 lg:py-12">
-        <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-          <div>
-            <p className="mb-2 text-xs font-bold uppercase tracking-[0.16em] text-[#4f7cff]">
-              Overview
-            </p>
-            <h1 className="text-2xl font-bold tracking-[-0.03em] text-slate-950 sm:text-[32px]">
-              압력 센서 모니터링
+      <main>
+        <section className="experience-section">
+          <div className="experience-intro">
+            <span className="eyebrow">Digital material study / 01</span>
+            <h1>
+              Make pressure
+              <br />
+              visible.
             </h1>
-            <p className="mt-2 text-sm text-slate-500">
-              FSR402 센서의 압력 변화를 실시간으로 확인하세요.
-            </p>
           </div>
-          <div className="flex flex-col items-start gap-2 sm:items-end">
-            <button
-              type="button"
-              onClick={connected ? disconnectSerial : connectSerial}
-              className={`rounded-xl px-4 py-2.5 text-sm font-semibold transition-colors ${connected ? "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50" : "bg-[#315edd] text-white shadow-sm hover:bg-[#284fc5]"}`}
-            >
-              {connected ? "연결 해제" : "시리얼 연결"}
-            </button>
-            {serialError && <p role="alert" className="max-w-xs text-right text-xs text-rose-600">{serialError}</p>}
-            {supabaseError && <p role="alert" className="max-w-xs text-right text-xs text-rose-600">Supabase: {supabaseError}</p>}
-          <p className="flex items-center gap-2 text-xs font-medium text-slate-400">
-            <svg viewBox="0 0 24 24" aria-hidden="true" className="size-4">
-              <path
-                d="M12 6.5V12l3.5 2M21 12a9 9 0 1 1-9-9 9 9 0 0 1 9 9Z"
-                fill="none"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeWidth="1.8"
-              />
-            </svg>
-            {activeMeasurements.length > 0 ? `마지막 업데이트: ${activeMeasurements.at(-1)?.time}` : "Arduino Uno · 115200 baud"}
-          </p>
-          </div>
-        </div>
 
-        <section className="grid gap-5 lg:grid-cols-[minmax(290px,0.72fr)_minmax(0,2fr)]">
-          <article className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[#315edd] via-[#416de9] to-[#7193f4] p-7 text-white shadow-[0_18px_45px_rgba(49,94,221,0.2)] sm:p-8">
-            <div className="absolute -right-16 -top-16 size-52 rounded-full border-[34px] border-white/5" />
-            <div className="relative flex h-full min-h-[308px] flex-col">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold text-blue-100">
-                  현재 압력값
-                </span>
-                <span className="rounded-full bg-white/15 px-3 py-1 text-[11px] font-semibold backdrop-blur-sm">
-                  LIVE
-                </span>
-              </div>
+          <div className="object-column">
+            {!hasSensorData && (
+              <span className="preview-badge">
+                <i />
+                Preview Mode
+              </span>
+            )}
 
-              <div className="my-auto py-8">
-                <div className="flex items-end gap-2">
-                  <strong className="text-[68px] font-semibold leading-none tracking-[-0.07em] sm:text-[76px]">
-                    {currentValue}
-                  </strong>
-                  <span className="mb-2.5 text-lg font-medium text-blue-100">
-                    ADC
-                  </span>
-                </div>
-                <div className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-slate-950/10 px-2.5 py-1.5 text-xs font-semibold text-white">
-                  <TrendIcon />
-                  <span>{trend >= 0 ? "+" : ""}{trend.toFixed(1)}%</span>
-                  <span className="font-normal text-blue-100">
-                    이전 측정 대비
-                  </span>
-                </div>
-              </div>
+            <MaterialObject pressure={smoothPressure} />
 
-              <div className="border-t border-white/15 pt-5">
-                <div className="mb-2 flex justify-between text-[11px] font-medium text-blue-100">
-                  <span>LOW</span>
-                  <span>현재 강도 {Math.round((currentValue / 1023) * 100)}%</span>
-                  <span>HIGH</span>
-                </div>
-                <div className="h-2 overflow-hidden rounded-full bg-slate-950/15">
-                  <div className="h-full rounded-full bg-white shadow-[0_0_12px_rgba(255,255,255,0.5)]" style={{ width: `${(currentValue / 1023) * 100}%` }} />
-                </div>
-              </div>
-            </div>
-          </article>
-
-          <article className="rounded-3xl border border-slate-200/80 bg-white p-6 shadow-[0_12px_40px_rgba(32,51,92,0.06)] sm:p-8">
-            <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+            <div className="pressure-readout" aria-live="polite">
               <div>
-                <h2 className="text-lg font-bold tracking-tight text-slate-900">
-                  압력 변화 추이
-                </h2>
-                <p className="mt-1 text-sm text-slate-400">
-                  최근 {activeMeasurements.length > 0 ? `${activeMeasurements.length}회 측정값` : "측정 샘플"}
-                </p>
+                <strong>{Math.round(smoothPressure * 100)}</strong>
+                <span>%</span>
               </div>
-              <div className="flex w-fit items-center gap-2 rounded-xl bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-500">
-                <svg
-                  viewBox="0 0 24 24"
-                  aria-hidden="true"
-                  className="size-3.5"
-                >
-                  <path
-                    d="M12 6.5V12l3.5 2M21 12a9 9 0 1 1-9-9 9 9 0 0 1 9 9Z"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeLinecap="round"
-                    strokeWidth="1.8"
-                  />
-                </svg>
-                최근 100회
-              </div>
-            </div>
-            <Chart data={displayData} />
-          </article>
-        </section>
-
-        <section className="mt-5 grid gap-4 sm:grid-cols-3">
-          {[
-            {
-              label: "최솟값",
-              value: String(liveStats.min),
-              unit: "ADC",
-              color: "bg-cyan-400",
-            },
-            {
-              label: "평균값",
-              value: String(liveStats.average),
-              unit: "ADC",
-              color: "bg-violet-400",
-            },
-            {
-              label: "최댓값",
-              value: String(liveStats.max),
-              unit: "ADC",
-              color: "bg-amber-400",
-            },
-          ].map((item) => (
-            <div
-              key={item.label}
-              className="flex items-center justify-between rounded-2xl border border-slate-200/80 bg-white px-5 py-4 shadow-[0_8px_25px_rgba(32,51,92,0.04)]"
-            >
-              <div className="flex items-center gap-3">
-                <span className={`size-2.5 rounded-full ${item.color}`} />
-                <span className="text-sm font-medium text-slate-500">
-                  {item.label}
-                </span>
-              </div>
-              <p className="text-lg font-bold tracking-tight">
-                {item.value}{" "}
-                <span className="text-xs font-medium text-slate-400">
-                  {item.unit}
-                </span>
+              <p>
+                {hasSensorData
+                  ? `${Math.round(latestSensorValue!)} ADC`
+                  : "ADC —"}
+                <span aria-hidden="true" />
+                {stage}
               </p>
             </div>
-          ))}
+          </div>
+
+          <div className="interaction-column">
+            <div className="interaction-copy">
+              <p>Apply pressure to transform the material.</p>
+              <div>
+                <button
+                  type="button"
+                  className={`serial-button ${
+                    serialConnected ? "is-connected" : ""
+                  }`}
+                  onClick={serialConnected ? disconnectSerial : connectSerial}
+                >
+                  <span />
+                  {serialConnected ? "Disconnect FSR402" : "Connect FSR402"}
+                </button>
+                <p className="connection-detail">Supabase · {supabaseStatus}</p>
+                {(serialError || supabaseError) && (
+                  <p className="sensor-error" role="alert">
+                    {serialError || supabaseError}
+                  </p>
+                )}
+              </div>
+            </div>
+            {!hasSensorData && (
+              <div className="preview-control">
+                <div className="control-label">
+                  <label htmlFor="pressure-preview">Preview pressure</label>
+                  <output htmlFor="pressure-preview">
+                    {Math.round(previewPressure * 100)}%
+                  </output>
+                </div>
+                <input
+                  id="pressure-preview"
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={Math.round(previewPressure * 100)}
+                  onChange={(event) =>
+                    updatePreview(Number(event.target.value))
+                  }
+                  style={
+                    {
+                      "--range-progress": `${previewPressure * 100}%`,
+                    } as React.CSSProperties
+                  }
+                  aria-describedby="preview-note"
+                />
+                <div className="range-labels" aria-hidden="true">
+                  <span>Rest</span>
+                  <span>Compressed</span>
+                </div>
+                <p id="preview-note">
+                  Sensor disconnected. This control affects the visual preview
+                  only.
+                </p>
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="data-section" aria-label="Pressure information">
+          <div className="data-heading">
+            <div>
+              <span className="eyebrow">Material response</span>
+              <h2>Pressure over time</h2>
+            </div>
+            <span className={`source-label ${hasSensorData ? "is-live" : ""}`}>
+              {hasSensorData ? "Live sensor data" : "Preview session data"}
+            </span>
+          </div>
+
+          <div className="data-grid">
+            <div className="graph-panel">
+              <PressureGraph values={activeValues} isPreview={!hasSensorData} />
+            </div>
+
+            <div className="metric-list">
+              {[
+                ["Minimum", statistics.min],
+                ["Average", statistics.average],
+                ["Maximum", statistics.max],
+              ].map(([label, value]) => (
+                <div className="metric-row" key={label as string}>
+                  <span>{label}</span>
+                  <strong>{formatStatistic(value as number | null)}</strong>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="status-grid">
+            <div className="sensor-state">
+              <span className="eyebrow">Sensor state</span>
+              <div>
+                <ConnectionMark connected={hasSensorData} />
+                <strong>
+                  {hasSensorData ? "Receiving data" : "Not connected"}
+                </strong>
+              </div>
+              <p>
+                {hasSensorData
+                  ? `${dataSource} input is controlling the material.`
+                  : serialConnected
+                    ? "Sensor connected. Waiting for the first valid reading."
+                    : "Preview input is isolated from sensor readings."}
+              </p>
+            </div>
+            <div className="stage-panel">
+              <span className="eyebrow">Response stage</span>
+              <StageScale activeStage={stage} />
+            </div>
+          </div>
         </section>
       </main>
+
+      <footer>
+        <span>SOFT MATTER © {new Date().getFullYear()}</span>
+        <span>FSR402 material interface</span>
+      </footer>
     </div>
   )
 }
